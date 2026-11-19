@@ -1,0 +1,743 @@
+{
+  "title": "Online Exam & Assignment Platform - production architecture",
+  "region": "us-east-1",
+  "requirements": {
+    "students": 8000,
+    "staff": 400,
+    "availability": "99.9%",
+    "az_failure": "survives loss of one AZ",
+    "rpo": "<= 5 min",
+    "rto": "<= 1 h",
+    "retention": "5 years",
+    "encryption": "in transit and at rest"
+  },
+  "flows": {
+    "shared": "Request path used by both walkthroughs",
+    "walkthrough_1": "Student opens an exam, answers autosave, MCQs auto-marked",
+    "walkthrough_2": "Student uploads a 40 MB assignment, tutor notified",
+    "replication": "Database replication between AZs",
+    "results_email": "Results email when tutor releases",
+    "config": "Configuration / security dependency",
+    "cicd": "Push to main redeploys"
+  },
+  "security_groups": [
+    {
+      "name": "alb-sg",
+      "inbound": "443 from internet"
+    },
+    {
+      "name": "app-sg",
+      "inbound": "8080 from alb-sg only"
+    },
+    {
+      "name": "db-sg",
+      "inbound": "3306 from app-sg only"
+    }
+  ],
+  "groups": [
+    {
+      "id": "edge",
+      "label": "Edge & identity (global)",
+      "type": "group",
+      "parent": null
+    },
+    {
+      "id": "region",
+      "label": "AWS Cloud - Region us-east-1",
+      "type": "region",
+      "parent": null
+    },
+    {
+      "id": "vpc",
+      "label": "VPC 10.0.0.0/16",
+      "type": "vpc",
+      "cidr": "10.0.0.0/16",
+      "parent": "region"
+    },
+    {
+      "id": "az_a",
+      "label": "Availability Zone A",
+      "type": "availability_zone",
+      "parent": "vpc"
+    },
+    {
+      "id": "az_b",
+      "label": "Availability Zone B",
+      "type": "availability_zone",
+      "parent": "vpc"
+    },
+    {
+      "id": "pub_a",
+      "label": "Public subnet A",
+      "type": "public_subnet",
+      "cidr": "10.0.1.0/24",
+      "parent": "az_a"
+    },
+    {
+      "id": "app_a",
+      "label": "Private app subnet A",
+      "type": "private_subnet",
+      "cidr": "10.0.11.0/24",
+      "parent": "az_a"
+    },
+    {
+      "id": "data_a",
+      "label": "Private data subnet A",
+      "type": "private_subnet",
+      "cidr": "10.0.21.0/24",
+      "parent": "az_a",
+      "internet_route": false
+    },
+    {
+      "id": "pub_b",
+      "label": "Public subnet B",
+      "type": "public_subnet",
+      "cidr": "10.0.2.0/24",
+      "parent": "az_b"
+    },
+    {
+      "id": "app_b",
+      "label": "Private app subnet B",
+      "type": "private_subnet",
+      "cidr": "10.0.12.0/24",
+      "parent": "az_b"
+    },
+    {
+      "id": "data_b",
+      "label": "Private data subnet B",
+      "type": "private_subnet",
+      "cidr": "10.0.22.0/24",
+      "parent": "az_b",
+      "internet_route": false
+    },
+    {
+      "id": "asg_group",
+      "label": "Auto Scaling group (min 2 / max 6, target CPU 50%, scheduled scale-out before exams)",
+      "type": "auto_scaling_group",
+      "spans": [
+        "app_a",
+        "app_b"
+      ],
+      "parent": "vpc"
+    },
+    {
+      "id": "data_svc",
+      "label": "Data (regional, replicated across 3 AZs)",
+      "type": "group",
+      "parent": "region"
+    },
+    {
+      "id": "async",
+      "label": "Asynchronous processing",
+      "type": "group",
+      "parent": "region"
+    },
+    {
+      "id": "security",
+      "label": "Security",
+      "type": "group",
+      "parent": "region"
+    },
+    {
+      "id": "ops",
+      "label": "Operations & resilience",
+      "type": "group",
+      "parent": null
+    },
+    {
+      "id": "cicd",
+      "label": "CI/CD & infrastructure as code",
+      "type": "group",
+      "parent": null
+    }
+  ],
+  "nodes": [
+    {
+      "id": "users",
+      "label": "Students / Tutors / Admins",
+      "service": "Users (browser)",
+      "group": null,
+      "type": "external",
+      "config": {}
+    },
+    {
+      "id": "route53",
+      "label": "Route 53",
+      "service": "Amazon Route 53",
+      "group": "edge",
+      "type": "dns",
+      "config": {
+        "record": "alias A/AAAA -> CloudFront"
+      }
+    },
+    {
+      "id": "cloudfront",
+      "label": "CloudFront",
+      "service": "Amazon CloudFront",
+      "group": "edge",
+      "type": "cdn",
+      "config": {
+        "default_behavior": "S3 frontend via OAC, CachingOptimized",
+        "api_behavior": "/api/* -> ALB, CachingDisabled",
+        "viewer_protocol": "redirect-to-https"
+      }
+    },
+    {
+      "id": "waf",
+      "label": "AWS WAF",
+      "service": "AWS WAF",
+      "group": "edge",
+      "type": "firewall",
+      "config": {
+        "rules": [
+          "AWSManagedRulesCommonRuleSet",
+          "rate limit 20000 req / 5 min / IP"
+        ],
+        "attached_to": "cloudfront"
+      }
+    },
+    {
+      "id": "acm",
+      "label": "ACM",
+      "service": "AWS Certificate Manager",
+      "group": "edge",
+      "type": "certificates",
+      "config": {
+        "certs": [
+          "CloudFront (us-east-1)",
+          "ALB HTTPS listener"
+        ]
+      }
+    },
+    {
+      "id": "s3_frontend",
+      "label": "S3 - frontend",
+      "service": "Amazon S3",
+      "group": "edge",
+      "type": "static_site",
+      "config": {
+        "public_access": "blocked",
+        "access": "CloudFront OAC only"
+      }
+    },
+    {
+      "id": "cognito",
+      "label": "Cognito",
+      "service": "Amazon Cognito",
+      "group": "edge",
+      "type": "auth",
+      "config": {
+        "groups": [
+          "students",
+          "tutors",
+          "admins"
+        ],
+        "sign_in": "email"
+      }
+    },
+    {
+      "id": "igw",
+      "label": "Internet gateway",
+      "service": "Internet Gateway",
+      "group": "vpc",
+      "type": "gateway",
+      "config": {}
+    },
+    {
+      "id": "nat_a",
+      "label": "NAT gateway A",
+      "service": "NAT Gateway",
+      "group": "pub_a",
+      "type": "nat",
+      "config": {
+        "serves": "app_a"
+      }
+    },
+    {
+      "id": "nat_b",
+      "label": "NAT gateway B",
+      "service": "NAT Gateway",
+      "group": "pub_b",
+      "type": "nat",
+      "config": {
+        "serves": "app_b"
+      }
+    },
+    {
+      "id": "alb",
+      "label": "Application Load Balancer",
+      "service": "Elastic Load Balancing (ALB)",
+      "group": "vpc",
+      "type": "load_balancer",
+      "config": {
+        "subnets": [
+          "pub_a",
+          "pub_b"
+        ],
+        "listener": "HTTPS :443 (ACM)",
+        "health_check": "/api/health every 10 s, 2 failures = unhealthy"
+      }
+    },
+    {
+      "id": "api_a",
+      "label": "API on EC2",
+      "service": "Amazon EC2",
+      "group": "app_a",
+      "type": "compute",
+      "config": {
+        "stateless": true,
+        "asg": "asg_group",
+        "imdsv2": true
+      }
+    },
+    {
+      "id": "api_b",
+      "label": "API on EC2",
+      "service": "Amazon EC2",
+      "group": "app_b",
+      "type": "compute",
+      "config": {
+        "stateless": true,
+        "asg": "asg_group",
+        "imdsv2": true
+      }
+    },
+    {
+      "id": "rds_primary",
+      "label": "RDS MySQL - primary",
+      "service": "Amazon RDS for MySQL",
+      "group": "data_a",
+      "type": "database",
+      "config": {
+        "multi_az": true,
+        "encrypted": true,
+        "backup_retention_days": 7,
+        "holds": "exams, schedules, attempts, results"
+      }
+    },
+    {
+      "id": "rds_standby",
+      "label": "RDS MySQL - standby",
+      "service": "Amazon RDS for MySQL",
+      "group": "data_b",
+      "type": "database",
+      "config": {
+        "role": "synchronous standby, automatic failover"
+      }
+    },
+    {
+      "id": "vpc_endpoints",
+      "label": "Gateway endpoints (S3, DynamoDB)",
+      "service": "VPC Gateway Endpoints",
+      "group": "vpc",
+      "type": "endpoint",
+      "config": {
+        "route_tables": [
+          "app_a",
+          "app_b"
+        ]
+      }
+    },
+    {
+      "id": "dynamodb",
+      "label": "DynamoDB",
+      "service": "Amazon DynamoDB",
+      "group": "data_svc",
+      "type": "nosql",
+      "config": {
+        "table": "answers",
+        "keys": "attemptId (PK), questionId (SK)",
+        "billing": "on-demand",
+        "pitr": true,
+        "peak_writes_per_sec": 100
+      }
+    },
+    {
+      "id": "s3_uploads",
+      "label": "S3 - assignment files",
+      "service": "Amazon S3",
+      "group": "data_svc",
+      "type": "object_storage",
+      "config": {
+        "encryption": "SSE-KMS",
+        "versioning": true,
+        "lifecycle": "STANDARD_IA 30d -> GLACIER 180d -> expire 1825d",
+        "max_upload_mb": 50
+      }
+    },
+    {
+      "id": "sqs_marking",
+      "label": "SQS marking + DLQ",
+      "service": "Amazon SQS",
+      "group": "async",
+      "type": "queue",
+      "config": {
+        "dlq_max_receive": 3
+      }
+    },
+    {
+      "id": "lambda_mark",
+      "label": "Lambda auto-mark",
+      "service": "AWS Lambda",
+      "group": "async",
+      "type": "function",
+      "config": {
+        "runtime": "python3.12",
+        "max_concurrency": 5
+      }
+    },
+    {
+      "id": "ses",
+      "label": "SES - results released",
+      "service": "Amazon SES",
+      "group": "async",
+      "type": "email",
+      "config": {}
+    },
+    {
+      "id": "sqs_uploads",
+      "label": "SQS upload events + DLQ",
+      "service": "Amazon SQS",
+      "group": "async",
+      "type": "queue",
+      "config": {
+        "dlq_max_receive": 3
+      }
+    },
+    {
+      "id": "lambda_notify",
+      "label": "Lambda notify tutor",
+      "service": "AWS Lambda",
+      "group": "async",
+      "type": "function",
+      "config": {
+        "runtime": "python3.12"
+      }
+    },
+    {
+      "id": "sns",
+      "label": "SNS - email to tutor",
+      "service": "Amazon SNS",
+      "group": "async",
+      "type": "notification",
+      "config": {
+        "protocol": "email"
+      }
+    },
+    {
+      "id": "secrets",
+      "label": "Secrets Manager",
+      "service": "AWS Secrets Manager",
+      "group": "security",
+      "type": "secrets",
+      "config": {
+        "stores": "DB credentials"
+      }
+    },
+    {
+      "id": "kms",
+      "label": "KMS",
+      "service": "AWS KMS",
+      "group": "security",
+      "type": "encryption",
+      "config": {
+        "protects": [
+          "RDS",
+          "S3",
+          "DynamoDB",
+          "SQS",
+          "SNS"
+        ]
+      }
+    },
+    {
+      "id": "iam",
+      "label": "IAM roles",
+      "service": "AWS IAM",
+      "group": "security",
+      "type": "identity",
+      "config": {
+        "model": "one least-privilege role per component"
+      }
+    },
+    {
+      "id": "cloudwatch",
+      "label": "CloudWatch",
+      "service": "Amazon CloudWatch",
+      "group": "ops",
+      "type": "monitoring",
+      "config": {
+        "alarms": [
+          "ALB 5xx",
+          "unhealthy targets",
+          "DLQ not empty",
+          "RDS CPU",
+          "Lambda errors"
+        ]
+      }
+    },
+    {
+      "id": "cloudtrail",
+      "label": "CloudTrail",
+      "service": "AWS CloudTrail",
+      "group": "ops",
+      "type": "audit",
+      "config": {}
+    },
+    {
+      "id": "backup",
+      "label": "AWS Backup",
+      "service": "AWS Backup",
+      "group": "ops",
+      "type": "backup",
+      "config": {
+        "schedule": "monthly",
+        "retention_years": 5
+      }
+    },
+    {
+      "id": "github_repo",
+      "label": "GitHub repo",
+      "service": "GitHub",
+      "group": "cicd",
+      "type": "source",
+      "config": {
+        "trigger": "push to main"
+      }
+    },
+    {
+      "id": "github_actions",
+      "label": "GitHub Actions",
+      "service": "GitHub Actions",
+      "group": "cicd",
+      "type": "pipeline",
+      "config": {
+        "steps": [
+          "lint",
+          "package API by commit SHA",
+          "cloudformation deploy",
+          "sync frontend + invalidate CloudFront",
+          "smoke test"
+        ]
+      }
+    },
+    {
+      "id": "cloudformation",
+      "label": "CloudFormation",
+      "service": "AWS CloudFormation",
+      "group": "cicd",
+      "type": "iac",
+      "config": {
+        "template": "infra/template.yaml"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "users",
+      "to": "route53",
+      "flow": "shared",
+      "label": "DNS",
+      "step": 1
+    },
+    {
+      "id": "e2",
+      "from": "route53",
+      "to": "cloudfront",
+      "flow": "shared"
+    },
+    {
+      "id": "e3",
+      "from": "users",
+      "to": "cloudfront",
+      "flow": "shared",
+      "label": "HTTPS",
+      "step": 2
+    },
+    {
+      "id": "e4",
+      "from": "waf",
+      "to": "cloudfront",
+      "flow": "config",
+      "label": "protects",
+      "style": "dashed"
+    },
+    {
+      "id": "e5",
+      "from": "acm",
+      "to": "cloudfront",
+      "flow": "config",
+      "label": "TLS cert",
+      "style": "dashed"
+    },
+    {
+      "id": "e6",
+      "from": "cloudfront",
+      "to": "s3_frontend",
+      "flow": "shared",
+      "label": "static files"
+    },
+    {
+      "id": "e7",
+      "from": "users",
+      "to": "cognito",
+      "flow": "shared",
+      "label": "sign-in (JWT)"
+    },
+    {
+      "id": "e8",
+      "from": "cloudfront",
+      "to": "alb",
+      "flow": "shared",
+      "label": "/api/* (HTTPS)",
+      "step": 3
+    },
+    {
+      "id": "e9",
+      "from": "igw",
+      "to": "alb",
+      "flow": "shared"
+    },
+    {
+      "id": "e10",
+      "from": "alb",
+      "to": "api_a",
+      "flow": "shared",
+      "step": 4
+    },
+    {
+      "id": "e11",
+      "from": "alb",
+      "to": "api_b",
+      "flow": "shared",
+      "step": 4
+    },
+    {
+      "id": "e12",
+      "from": "api_a",
+      "to": "rds_primary",
+      "flow": "walkthrough_1",
+      "label": "SQL"
+    },
+    {
+      "id": "e13",
+      "from": "api_b",
+      "to": "rds_primary",
+      "flow": "walkthrough_1",
+      "label": "SQL"
+    },
+    {
+      "id": "e14",
+      "from": "rds_primary",
+      "to": "rds_standby",
+      "flow": "replication",
+      "label": "sync replication / auto failover",
+      "bidirectional": true
+    },
+    {
+      "id": "e15",
+      "from": "api_b",
+      "to": "vpc_endpoints",
+      "flow": "walkthrough_1"
+    },
+    {
+      "id": "e16",
+      "from": "vpc_endpoints",
+      "to": "dynamodb",
+      "flow": "walkthrough_1",
+      "label": "autosave every 30 s",
+      "step": 5
+    },
+    {
+      "id": "e17",
+      "from": "api_b",
+      "to": "sqs_marking",
+      "flow": "walkthrough_1",
+      "label": "submit -> marking job",
+      "step": 6
+    },
+    {
+      "id": "e18",
+      "from": "sqs_marking",
+      "to": "lambda_mark",
+      "flow": "walkthrough_1",
+      "step": 7
+    },
+    {
+      "id": "e19",
+      "from": "lambda_mark",
+      "to": "dynamodb",
+      "flow": "walkthrough_1",
+      "label": "write score",
+      "step": 8
+    },
+    {
+      "id": "e20",
+      "from": "lambda_mark",
+      "to": "ses",
+      "flow": "results_email",
+      "label": "on release"
+    },
+    {
+      "id": "e21",
+      "from": "users",
+      "to": "s3_uploads",
+      "flow": "walkthrough_2",
+      "label": "presigned POST (40 MB direct, S3 enforces <= 50 MB)"
+    },
+    {
+      "id": "e22",
+      "from": "vpc_endpoints",
+      "to": "s3_uploads",
+      "flow": "walkthrough_2"
+    },
+    {
+      "id": "e23",
+      "from": "s3_uploads",
+      "to": "sqs_uploads",
+      "flow": "walkthrough_2",
+      "label": "ObjectCreated"
+    },
+    {
+      "id": "e24",
+      "from": "sqs_uploads",
+      "to": "lambda_notify",
+      "flow": "walkthrough_2"
+    },
+    {
+      "id": "e25",
+      "from": "lambda_notify",
+      "to": "sns",
+      "flow": "walkthrough_2",
+      "label": "email tutor"
+    },
+    {
+      "id": "e26",
+      "from": "api_b",
+      "to": "secrets",
+      "flow": "config",
+      "label": "read DB secret",
+      "style": "dashed"
+    },
+    {
+      "id": "e27",
+      "from": "github_repo",
+      "to": "github_actions",
+      "flow": "cicd"
+    },
+    {
+      "id": "e28",
+      "from": "github_actions",
+      "to": "cloudformation",
+      "flow": "cicd"
+    },
+    {
+      "id": "e29",
+      "from": "cloudformation",
+      "to": "region",
+      "flow": "cicd",
+      "label": "creates / updates the whole stack"
+    }
+  ]
+}
