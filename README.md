@@ -8,6 +8,8 @@ DSO303 Assignment 2. A cloud architecture for a university of **8,000 students a
 | Service table | [`docs/services.md`](docs/services.md) |
 | Infrastructure as code | [`infra/template.yaml`](infra/template.yaml) (CloudFormation) |
 | CI/CD | [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) |
+| Report | [`report.md`](report.md) |
+| Cloud Architecture Lab workspace | [`architecture/lab-architecture.json`](architecture/lab-architecture.json) |
 | Evidence | [`evidence/`](evidence/) |
 | Editable diagram | [`architecture/architecture.svg`](architecture/architecture.svg) |
 
@@ -29,10 +31,22 @@ frontend/           Single-page web app (student, tutor views)
 infra/template.yaml Entire platform as one CloudFormation stack
 .github/workflows/  Pipeline: lint → package → deploy → publish frontend → smoke test
 scripts/            watch.sh, simulate-az-failure.sh, restore-az.sh, teardown.sh
-architecture/       Diagram + the two request walkthroughs + peak/AZ reasoning
+architecture/       Diagram, walkthroughs, peak/AZ reasoning, lab-architecture.json
 docs/services.md    Every service: role, why over an alternative, config, connections
-evidence/           Cloud Architecture Lab image
+evidence/           Lab simulations (both walkthroughs, peak, AZ-A/AZ-B failure) + validation screenshots
 ```
+
+## Cloud Architecture Lab results
+
+| Scenario | Result |
+|---|---|
+| Walkthrough 1: open exam + autosave | HTTP 202, 147 ms, 12 steps (IAM-authorised DynamoDB write, marking job on SQS) |
+| Walkthrough 2: 40 MB upload, tutor notified | HTTP 202, 40 ms (S3 → SQS → Lambda notify tutor) |
+| Exam peak (100× spike) | HTTP 202, no bottleneck |
+| AZ-A outage | ALB routes to AZ-B, HTTP 202 |
+| AZ-B outage | ALB routes to AZ-A, HTTP 202 |
+
+Details and screenshots are in [`report.md`](report.md), section 8.
 
 ## Deploy (from code)
 
@@ -64,4 +78,3 @@ Once deployed, `scripts/watch.sh` + `scripts/simulate-az-failure.sh` demonstrate
 - **Per-component IAM roles:** the role names are parameters, defaulting to the AWS Academy `LabRole` / `LabInstanceProfile`.
 - **Retention:** `DeletionPolicy: Delete` is set so teardown is clean. Production would use `Snapshot`/`Retain` plus AWS Backup for 5-year retention.
 - **API authorisation:** the demo API reads the role from an `X-Demo-Role` header. Production reads it from the Cognito JWT.
-# DSO303_A2_02230305

@@ -2,7 +2,7 @@
 
 ![Architecture diagram](architecture.png)
 
-*Editable source: [`architecture.svg`](architecture.svg). Numbers ①–⑧ in the diagram match Walkthrough 1. Green arrows show Walkthrough 2.*
+*Editable source: [`architecture.svg`](architecture.svg). The same design as a Cloud Architecture Lab workspace: [`lab-architecture.json`](lab-architecture.json). Numbers ①–⑧ in the diagram match Walkthrough 1. Green arrows show Walkthrough 2.*
 
 Region **us-east-1**, VPC `10.0.0.0/16`, with every tier spread across **two Availability Zones**:
 
